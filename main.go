@@ -70,6 +70,7 @@ func newApp() *cli.App {
 		rmCommand,
 		pullCommand,
 		runCommand,
+		logCommand,
 	}
 	return app
 }
