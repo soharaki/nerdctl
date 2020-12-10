@@ -19,9 +19,13 @@ package main
 
 import (
 	"os"
+	"strings"
 
+	"github.com/AkihiroSuda/nerdctl/pkg/version"
+	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/defaults"
 	"github.com/containerd/containerd/namespaces"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 )
@@ -38,6 +42,7 @@ func newApp() *cli.App {
 	app.Name = "nerdctl"
 	app.Usage = "Docker-compatible CLI for containerd"
 	app.UseShortOptionHandling = true
+	app.Version = version.Version
 	app.Flags = []cli.Flag{
 		&cli.BoolFlag{
 			Name:        "debug",
@@ -45,9 +50,10 @@ func newApp() *cli.App {
 			Destination: &debug,
 		},
 		&cli.StringFlag{
-			Name:    "host",
-			Aliases: []string{"H"},
-			Usage:   "containerd address, e.g. \"unix:///run/containerd/containerd.sock\", or \"/var/run/docker/containerd/containerd.sock\"",
+			Name:    "address",
+			Aliases: []string{"a", "host", "H"},
+			Usage:   "containerd address, optionally with \"unix://\" prefix",
+			EnvVars: []string{"CONTAINERD_ADDRESS"},
 			Value:   "unix://" + defaults.DefaultAddress,
 		},
 		&cli.StringFlag{
@@ -57,20 +63,33 @@ func newApp() *cli.App {
 			EnvVars: []string{namespaces.NamespaceEnvVar},
 			Value:   namespaces.Default,
 		},
+		&cli.StringFlag{
+			Name:    "snapshotter",
+			Aliases: []string{"storage-driver"},
+			Usage:   "containerd snapshotter",
+			EnvVars: []string{"CONTAINERD_SNAPSHOTTER"},
+			Value:   containerd.DefaultSnapshotter,
+		},
 	}
-	app.Before = func(context *cli.Context) error {
+	app.Before = func(clicontext *cli.Context) error {
 		if debug {
 			logrus.SetLevel(logrus.DebugLevel)
+		}
+		address := clicontext.String("address")
+		if strings.Contains(address, "://") && !strings.HasPrefix(address, "unix://") {
+			return errors.Errorf("invalid address %q", address)
 		}
 		return nil
 	}
 	app.Commands = []*cli.Command{
 		buildCommand,
+		imagesCommand,
 		psCommand,
 		rmCommand,
 		pullCommand,
 		runCommand,
 		logCommand,
+		versionCommand,
 	}
 	return app
 }

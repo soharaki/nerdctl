@@ -26,12 +26,7 @@ To list Kubernetes containers:
 ```
 
 ## Install
-
-Run `make && sudo make install`, or just use `go get`:
-
-```console
-# go get github.com/AkihiroSuda/nerdctl
-```
+Binaries are available for amd64, arm64, and arm-v7: https://github.com/AkihiroSuda/nerdctl/releases
 
 In addition to containerd, the following components should be installed (optional):
 - [CNI plugins](https://github.com/containernetworking/plugins): for internet connectivity.
@@ -57,9 +52,14 @@ Also, `nerdctl` might be potentially useful for debugging Kubernetes clusters, b
 - `nerdctl build`
   - `-t`
 
+- `nerdctl images`
+  - `-q, --quiet`: Only show numeric IDs
+  - `--no-trunc`: Don't truncate output
+
 - `nerdctl ps`
   - `-a, --all`: Show all containers (default shows just running)
-  - `--no-trunc`
+  - `--no-trunc`: Don't truncate output
+  - `-q, --quiet`: Only display container IDs
 
 - `nerdctl pull`
 
@@ -67,8 +67,10 @@ Also, `nerdctl` might be potentially useful for debugging Kubernetes clusters, b
   - `-f`
 
 - `nerdctl run`
-  - `-i` (WIP: always needs to be true)
-  - `-t` (WIP: always needs to be true)
+  - `-i` (WIP: currently -i needs to correspond to -t)
+  - `-t` (WIP: currently -t needs to correspond to -i)
+  - `-d`
+  - `--restart=(no|always)` (WIP: currently "always" requires `--network=(host|none)`)
   - `--rm`
   - `--network=(bridge|host|none)`
   - `--dns`
@@ -78,7 +80,19 @@ Also, `nerdctl` might be potentially useful for debugging Kubernetes clusters, b
   - `--security-opt no-new-privileges`
   - `--privileged`
 
+- `nerdctl version`
+
 Lots of commands and flags are currently missing. Pull requests are highly welcome.
+
+## Features present in `nerdctl` but not present in Docker
+- Namespacing as in `kubectl --namespace=<NS>`: `nerdctl --namespace=<NS> ps`
+- [Lazy-pulling using Stargz Snapshotter](./docs/stargz.md): `nerdctl --snapshotter=stargz run`
+
+## Compiling nerdctl from source
+
+Run `make && sudo make install`.
+
+Using `go get github.com/AkihiroSuda/nerdctl` is possible, but unrecommended because it does not fill version strings printed in `nerdctl version`
 
 ## Contributing to nerdctl
 

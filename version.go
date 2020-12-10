@@ -18,28 +18,21 @@
 package main
 
 import (
-	"github.com/AkihiroSuda/nerdctl/pkg/imgutil"
-	"github.com/pkg/errors"
+	"fmt"
 
+	"github.com/AkihiroSuda/nerdctl/pkg/version"
 	"github.com/urfave/cli/v2"
 )
 
-var pullCommand = &cli.Command{
-	Name:   "pull",
-	Usage:  "Pull an image from a registry",
-	Action: pullAction,
-	Flags:  []cli.Flag{},
+var versionCommand = &cli.Command{
+	Name:   "version",
+	Usage:  "Show the nerdctl version information",
+	Action: versionAction,
 }
 
-func pullAction(clicontext *cli.Context) error {
-	if clicontext.NArg() < 1 {
-		return errors.New("image name needs to be specified")
-	}
-	client, ctx, cancel, err := newClient(clicontext)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-	_, err = imgutil.EnsureImage(ctx, client, clicontext.App.Writer, clicontext.String("snapshotter"), clicontext.Args().First(), "always")
-	return err
+func versionAction(clicontext *cli.Context) error {
+	fmt.Fprintf(clicontext.App.Writer, "Client:\n")
+	fmt.Fprintf(clicontext.App.Writer, "  Version:    %s\n", version.Version)
+	fmt.Fprintf(clicontext.App.Writer, "  Git commit: %s\n", version.Revision)
+	return nil
 }
