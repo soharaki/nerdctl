@@ -2,6 +2,8 @@
 
 `nerdctl` is a Docker-compatible CLI for [contai**nerd**](https://containerd.io).
 
+[![asciicast](https://asciinema.org/a/378377.svg)](https://asciinema.org/a/378377)
+
 ## Examples
 
 To run a container with the default CNI network (10.4.0.0/16):
@@ -50,11 +52,23 @@ Also, `nerdctl` might be potentially useful for debugging Kubernetes clusters, b
 ## Implementation status of Docker-compatible commands and flags
 
 - `nerdctl build`
-  - `-t`
+  - `-t, --tag`
+  - `--target`
+  - `--build-arg`
+  - `--no-cache`
+  - `--progress`
+  - `--secret`
+  - `--ssh`
+
+- `nerdctl load`
 
 - `nerdctl images`
   - `-q, --quiet`: Only show numeric IDs
   - `--no-trunc`: Don't truncate output
+
+- `nerdctl rmi`
+
+- `nerdctl info`
 
 - `nerdctl ps`
   - `-a, --all`: Show all containers (default shows just running)
@@ -67,18 +81,24 @@ Also, `nerdctl` might be potentially useful for debugging Kubernetes clusters, b
   - `-f`
 
 - `nerdctl run`
-  - `-i` (WIP: currently -i needs to correspond to -t)
-  - `-t` (WIP: currently -t needs to correspond to -i)
+  - `-i`
+  - `-t` (WIP: currently -t requires -i, and conflicts with -d)
   - `-d`
-  - `--restart=(no|always)` (WIP: currently "always" requires `--network=(host|none)`)
+  - `--restart=(no|always)`
   - `--rm`
   - `--network=(bridge|host|none)`
+  - `-p, --publish` (WIP: currently TCP only)
   - `--dns`
   - `--pull=(always|missing|never)`
+  - `--cpus`
+  - `--memory`
+  - `--pids-limit`
+  - `--cgroupns=(host|private)`
   - `--security-opt seccomp`
   - `--security-opt apparmor`
   - `--security-opt no-new-privileges`
   - `--privileged`
+  - `-v, --volume`
 
 - `nerdctl version`
 

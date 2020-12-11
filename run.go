@@ -23,23 +23,23 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/AkihiroSuda/nerdctl/pkg/imgutil"
+	"github.com/AkihiroSuda/nerdctl/pkg/mountutil"
+	"github.com/AkihiroSuda/nerdctl/pkg/portutil"
 	"github.com/containerd/console"
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/cmd/ctr/commands"
 	"github.com/containerd/containerd/cmd/ctr/commands/tasks"
 	"github.com/containerd/containerd/containers"
-	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/oci"
 	"github.com/containerd/containerd/runtime/restart"
-	gocni "github.com/containerd/go-cni"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -92,12 +92,41 @@ var runCommand = &cli.Command{
 			Value: cli.NewStringSlice("8.8.8.8", "1.1.1.1"),
 		},
 		&cli.StringSliceFlag{
+			Name:    "publish",
+			Aliases: []string{"p"},
+			Usage:   "Publish a container's port(s) to the host (Currently TCP only)",
+		},
+		&cli.Float64Flag{
+			Name:  "cpus",
+			Usage: "Number of CPUs",
+		},
+		&cli.StringFlag{
+			Name:    "memory",
+			Aliases: []string{"m"},
+			Usage:   "Memory limit",
+		},
+		&cli.IntFlag{
+			Name:  "pids-limit",
+			Usage: "Tune container pids limit (set -1 for unlimited)",
+			Value: -1,
+		},
+		&cli.StringFlag{
+			Name:  "cgroupns",
+			Usage: "Cgroup namespace to use, the default depends on the cgroup version (\"host\"|\"private\")",
+			Value: defaultCgroupnsMode(),
+		},
+		&cli.StringSliceFlag{
 			Name:  "security-opt",
 			Usage: "Security options",
 		},
 		&cli.BoolFlag{
 			Name:  "privileged",
 			Usage: "Give extended privileges to this container",
+		},
+		&cli.StringSliceFlag{
+			Name:    "volume",
+			Aliases: []string{"v"},
+			Usage:   "Bind mount a volume",
 		},
 	},
 }
@@ -123,9 +152,27 @@ func runAction(clicontext *cli.Context) error {
 		cOpts []containerd.NewContainerOpts
 		id    = genID()
 	)
+
+	dataRoot := clicontext.String("data-root")
+	if err := os.MkdirAll(dataRoot, 0700); err != nil {
+		return err
+	}
+
+	ns := clicontext.String("namespace")
+	if strings.Contains(ns, "/") {
+		return errors.New("namespace with '/' is unsupported")
+	}
+	stateDir := filepath.Join(dataRoot, "c", ns, id) // "c" stands for "containers"
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		return err
+	}
+
 	opts = append(opts,
 		oci.WithDefaultSpec(),
 		oci.WithDefaultUnixDevices,
+		oci.WithMounts([]specs.Mount{
+			{Type: "cgroup", Source: "cgroup", Destination: "/sys/fs/cgroup", Options: []string{"ro"}},
+		}),
 		oci.WithImageConfig(ensured.Image),
 	)
 	cOpts = append(cOpts,
@@ -142,57 +189,78 @@ func runAction(clicontext *cli.Context) error {
 	flagT := clicontext.Bool("t")
 	flagD := clicontext.Bool("d")
 
-	if (flagI && !flagT) || (!flagI && flagT) {
-		return errors.New("currently -i and -t need to be always set or unset together (FIXME)")
+	if flagI {
+		if flagD {
+			return errors.New("currently flag -t and -d cannot be specified together (FIXME)")
+		}
 	}
+
 	if flagT {
 		if flagD {
 			return errors.New("currently flag -t and -d cannot be specified together (FIXME)")
 		}
+		if !flagI {
+			return errors.New("currently flag -t needs -i to be specified together (FIXME)")
+		}
 		opts = append(opts, oci.WithTTY)
 	}
 
-	restartOpts, err := generateRestartOpts(clicontext.String("restart"), clicontext.String("network"))
+	var mounts []specs.Mount
+	for _, v := range clicontext.StringSlice("v") {
+		m, err := mountutil.ParseFlagV(v)
+		if err != nil {
+			return err
+		}
+		mounts = append(mounts, *m)
+	}
+	opts = append(opts, oci.WithMounts(mounts))
+
+	restartOpts, err := generateRestartOpts(clicontext.String("restart"))
 	if err != nil {
 		return err
 	}
 	cOpts = append(cOpts, restartOpts...)
 
-	var cniNetwork gocni.CNI
 	switch netstr := clicontext.String("network"); netstr {
 	case "none":
 		// NOP
 	case "host":
 		opts = append(opts, oci.WithHostNamespace(specs.NetworkNamespace), oci.WithHostHostsFile, oci.WithHostResolvconf)
 	case "bridge":
+		// We only verify flags here.
+		// The actual network is configured in the oci hook.
+		cniPath := clicontext.String("cni-path")
 		for _, f := range requiredCNIPlugins {
-			p := filepath.Join(gocni.DefaultCNIDir, f)
+			p := filepath.Join(cniPath, f)
 			if _, err := exec.LookPath(p); err != nil {
-				return errors.Wrapf(err, "needs CNI plugin %q to be installed, see https://github.com/containernetworking/plugins/releases", p)
+				return errors.Wrapf(err, "needs CNI plugin %q to be installed in CNI_PATH (%q), see https://github.com/containernetworking/plugins/releases",
+					f, cniPath)
 			}
-		}
-		if cniNetwork, err = gocni.New(gocni.WithConfListBytes([]byte(defaultBridgeNetwork))); err != nil {
-			return err
-		}
-		resolvConf, err := ioutil.TempFile("", "nerdctl-resolvconf")
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(resolvConf.Name())
-		if _, err = resolvConf.Write([]byte("search localdomain\n")); err != nil {
-			return err
 		}
 		for _, dns := range clicontext.StringSlice("dns") {
 			if net.ParseIP(dns) == nil {
 				return errors.Errorf("invalid dns %q", dns)
 			}
-			if _, err = resolvConf.Write([]byte("nameserver " + dns + "\n")); err != nil {
+		}
+		for _, p := range clicontext.StringSlice("p") {
+			if _, err = portutil.ParseFlagP(p); err != nil {
 				return err
 			}
 		}
-		opts = append(opts, withCustomResolvConf(resolvConf.Name()))
 	default:
 		return errors.Errorf("unknown network %q", netstr)
+	}
+
+	hookOpt, err := withNerdctlOCIHook(clicontext, id, stateDir)
+	if err != nil {
+		return err
+	}
+	opts = append(opts, hookOpt)
+
+	if cgOpts, err := generateCgroupOpts(clicontext); err != nil {
+		return err
+	} else {
+		opts = append(opts, cgOpts...)
 	}
 
 	securityOptsMaps := ConvertKVStringsToMap(clicontext.StringSlice("security-opt"))
@@ -234,20 +302,10 @@ func runAction(clicontext *cli.Context) error {
 	var statusC <-chan containerd.ExitStatus
 	if !flagD {
 		defer func() {
-			if cniNetwork != nil {
-				if err := cniNetwork.Remove(ctx, fullID(ctx, container), ""); err != nil {
-					logrus.WithError(err).Error("network review")
-				}
-			}
 			task.Delete(ctx)
 		}()
 		statusC, err = task.Wait(ctx)
 		if err != nil {
-			return err
-		}
-	}
-	if cniNetwork != nil {
-		if _, err := cniNetwork.Setup(ctx, fullID(ctx, container), fmt.Sprintf("/proc/%d/ns/net", task.Pid())); err != nil {
 			return err
 		}
 	}
@@ -288,39 +346,54 @@ func genID() string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// fullID is from https://github.com/containerd/containerd/blob/v1.4.3/cmd/ctr/commands/run/run.go
-func fullID(ctx context.Context, c containerd.Container) string {
-	id := c.ID()
-	ns, ok := namespaces.Namespace(ctx)
-	if !ok {
-		return id
+func withNerdctlOCIHook(clicontext *cli.Context, id, stateDir string) (oci.SpecOpts, error) {
+	selfExe, err := os.Readlink("/proc/self/exe")
+	if err != nil {
+		return nil, err
 	}
-	return fmt.Sprintf("%s-%s", ns, id)
-}
-
-func withCustomResolvConf(src string) func(context.Context, oci.Client, *containers.Container, *oci.Spec) error {
-	return func(_ context.Context, _ oci.Client, _ *containers.Container, s *oci.Spec) error {
-		s.Mounts = append(s.Mounts, specs.Mount{
-			Destination: "/etc/resolv.conf",
-			Type:        "bind",
-			Source:      src,
-			Options:     []string{"rbind", "ro"},
+	fullID := clicontext.String("namespace") + "-" + id
+	args := []string{
+		// FIXME: How to propagate all global flags?
+		"--cni-path=" + clicontext.String("cni-path"),
+		"internal",
+		"oci-hook",
+		"--full-id=" + fullID,
+		"--container-state-dir=" + stateDir,
+		"--network=" + clicontext.String("network"),
+	}
+	for _, dns := range clicontext.StringSlice("dns") {
+		args = append(args, "--dns="+dns)
+	}
+	for _, p := range clicontext.StringSlice("p") {
+		args = append(args, "-p="+p)
+	}
+	return func(_ context.Context, _ oci.Client, _ *containers.Container, s *specs.Spec) error {
+		if s.Hooks == nil {
+			s.Hooks = &specs.Hooks{}
+		}
+		crArgs := append(args, "createRuntime")
+		s.Hooks.CreateRuntime = append(s.Hooks.CreateRuntime, specs.Hook{
+			Path: selfExe,
+			Args: crArgs,
+			Env:  os.Environ(),
+		})
+		argsCopy := append([]string(nil), args...)
+		psArgs := append(argsCopy, "postStop")
+		s.Hooks.Poststop = append(s.Hooks.Poststop, specs.Hook{
+			Path: selfExe,
+			Args: psArgs,
+			Env:  os.Environ(),
 		})
 		return nil
-	}
+	}, nil
 }
 
-func generateRestartOpts(restartFlag, netFlag string) ([]containerd.NewContainerOpts, error) {
+func generateRestartOpts(restartFlag string) ([]containerd.NewContainerOpts, error) {
 	switch restartFlag {
 	case "", "no":
 		return nil, nil
 	case "always":
-		switch netFlag {
-		case "none", "host":
-			return []containerd.NewContainerOpts{restart.WithStatus(containerd.Running)}, nil
-		}
-		// FIXME: execute `/proc/$$/exe internal oci-hook` as an OCI hook to set up CNI
-		return nil, errors.Errorf("currently, --restart=%s conflicts with --net=%s (FIXME)", restartFlag, netFlag)
+		return []containerd.NewContainerOpts{restart.WithStatus(containerd.Running)}, nil
 	default:
 		return nil, errors.Errorf("unsupported restart type %q, supported types are: \"no\",  \"always\"", restartFlag)
 	}

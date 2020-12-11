@@ -25,6 +25,7 @@ import (
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/defaults"
 	"github.com/containerd/containerd/namespaces"
+	gocni "github.com/containerd/go-cni"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
@@ -42,7 +43,7 @@ func newApp() *cli.App {
 	app.Name = "nerdctl"
 	app.Usage = "Docker-compatible CLI for containerd"
 	app.UseShortOptionHandling = true
-	app.Version = version.Version
+	app.Version = strings.TrimPrefix(version.Version, "v")
 	app.Flags = []cli.Flag{
 		&cli.BoolFlag{
 			Name:        "debug",
@@ -70,6 +71,17 @@ func newApp() *cli.App {
 			EnvVars: []string{"CONTAINERD_SNAPSHOTTER"},
 			Value:   containerd.DefaultSnapshotter,
 		},
+		&cli.StringFlag{
+			Name:    "cni-path",
+			Usage:   "Set the cni-plugins binary directory",
+			EnvVars: []string{"CNI_PATH"},
+			Value:   gocni.DefaultCNIDir,
+		},
+		&cli.StringFlag{
+			Name:  "data-root",
+			Usage: "Root directory of persistent nerdctl state (managed by nerdctl, not by containerd)",
+			Value: "/var/lib/nerdctl",
+		},
 	}
 	app.Before = func(clicontext *cli.Context) error {
 		if debug {
@@ -83,9 +95,13 @@ func newApp() *cli.App {
 	}
 	app.Commands = []*cli.Command{
 		buildCommand,
+		loadCommand,
 		imagesCommand,
+		infoCommand,
+		internalCommand,
 		psCommand,
 		rmCommand,
+		rmiCommand,
 		pullCommand,
 		runCommand,
 		logCommand,
